@@ -1,0 +1,463 @@
+// =============================================================================
+// NexusERP — Prisma Schema
+// PostgreSQL · Production-Grade Enterprise ERP
+// =============================================================================
+//
+// Conventions:
+//   • All IDs       → cuid()  (URL-safe, sortable, no UUID hyphens in URLs)
+//   • All timestamps → createdAt / updatedAt (auto-managed)
+//   • Soft-delete   → isActive Boolean (never hard-delete users/items)
+//   • Decimals      → explicit @db.Decimal(precision, scale) — never Float
+//   • Indexes       → every FK column + every frequently-filtered column
+//   • Cascade rules → stated explicitly on every relation
+//   • Map names     → snake_case table names for clean SQL introspection
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+// ── User roles for RBAC ───────────────────────────────────────────────────────
+enum Role {
+  ADMIN     // Full system access — manage users, roles, all data
+  MANAGER   // Approve POs, assign tasks, view all analytics
+  FINANCE   // View/export financial reports, approve high-value POs
+  HR        // Manage employee records, view HR-related tasks
+  EMPLOYEE  // Create tasks, view own tasks, create draft POs
+}
+
+// ── Purchase order lifecycle ───────────────────────────────────────────────────
+// Allowed transitions:
+//   DRAFT → PENDING_APPROVAL → APPROVED → COMPLETED
+//   DRAFT → PENDING_APPROVAL → REJECTED
+//   APPROVED → REJECTED (rare, e.g. compliance hold)
+enum POStatus {
+  DRAFT             // Created but not submitted for review
+  PENDING_APPROVAL  // Submitted — awaiting approver action
+  APPROVED          // Approved by an authorized Manager/Finance
+  COMPLETED         // Goods received, PO closed
+  REJECTED          // Rejected at any approval stage
+}
+
+// ── Approval decision recorded per approval event ────────────────────────────
+enum ApprovalAction {
+  APPROVED    // Approver approved the PO
+  REJECTED    // Approver rejected the PO
+  ESCALATED   // Approver escalated to a higher authority
+  RECALLED    // Creator recalled the PO before decision
+}
+
+// ── Task kanban stages ────────────────────────────────────────────────────────
+enum TaskStage {
+  TODO        // Not started
+  IN_PROGRESS // Actively being worked on
+  REVIEW      // Completed work, pending peer/manager review
+  DONE        // Fully complete and accepted
+}
+
+// ── Task priority ─────────────────────────────────────────────────────────────
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+// ── Stock movement direction ──────────────────────────────────────────────────
+enum MovementType {
+  IN          // Stock received (e.g. PO delivery, return)
+  OUT         // Stock consumed/issued (e.g. team allocation, sale)
+  ADJUSTMENT  // Manual correction (e.g. after physical stock count)
+  TRANSFER    // Moved between warehouse zones
+  RESERVED    // Allocated to a PO but not yet consumed
+}
+
+// ── Audit event types — append-only compliance trail ─────────────────────────
+enum AuditAction {
+  // Authentication
+  LOGIN
+  LOGOUT
+  PASSWORD_CHANGED
+  TOKEN_REFRESHED
+
+  // CRUD
+  CREATED
+  UPDATED
+  DELETED
+  RESTORED      // Soft-delete reversal
+
+  // Workflow
+  APPROVED
+  REJECTED
+  ESCALATED
+  COMPLETED
+  RECALLED
+  SUBMITTED     // PO submitted for approval
+
+  // System / AI
+  ALERT         // Automated system alert (e.g. low stock)
+  GENERATED     // AI/system auto-generated report or record
+  AI_QUERY      // User sent a message to the AI Copilot
+  EXPORTED      // Data exported to CSV/PDF
+}
+
+// =============================================================================
+// MODEL: User
+// Central identity record. Soft-deleted via isActive flag.
+// =============================================================================
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String                            // bcrypt hash — never plain text
+  firstName    String    @db.VarChar(50)
+  lastName     String    @db.VarChar(50)
+  role         Role      @default(EMPLOYEE)
+  department   String?   @db.VarChar(100)
+  avatarUrl    String?
+  isActive     Boolean   @default(true)          // Soft delete flag
+  lastLoginAt  DateTime?                         // Updated on every successful login
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  createdTasks           Task[]                  @relation("TaskCreator")
+  assignedTasks          Task[]                  @relation("TaskAssignee")
+  purchaseOrdersCreated  PurchaseOrder[]         @relation("POCreator")
+  approvals              PurchaseOrderApproval[]
+  auditLogs              AuditLog[]
+  analyticsSnapshots     AnalyticsSnapshot[]
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([role])
+  @@index([isActive])
+  @@index([department])
+  @@index([lastLoginAt])
+  @@map("users")
+}
+
+// =============================================================================
+// MODEL: Supplier
+// Vendors from whom inventory is purchased via Purchase Orders.
+// =============================================================================
+model Supplier {
+  id        String   @id @default(cuid())
+  name      String   @db.VarChar(200)
+  email     String?  @db.VarChar(255)
+  phone     String?  @db.VarChar(30)
+  address   String?  @db.VarChar(500)
+  website   String?  @db.VarChar(255)
+  notes     String?  @db.Text
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  inventoryItems InventoryItem[]
+  purchaseOrders PurchaseOrder[]
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([name])
+  @@index([isActive])
+  @@map("suppliers")
+}
+
+// =============================================================================
+// MODEL: InventoryCategory
+// Hierarchical grouping for inventory items (e.g. Laptops, Servers).
+// =============================================================================
+model InventoryCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique @db.VarChar(100)
+  description String?  @db.VarChar(500)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  items InventoryItem[]
+
+  @@map("inventory_categories")
+}
+
+// =============================================================================
+// MODEL: InventoryItem
+// Physical or digital product tracked in the warehouse.
+// totalValue is a denormalized field (quantity × unitPrice) kept in sync
+// by the service layer to avoid expensive recalculation on every read.
+// =============================================================================
+model InventoryItem {
+  id            String   @id @default(cuid())
+  sku           String   @unique @db.VarChar(50)    // Stock Keeping Unit — must be unique
+  name          String   @db.VarChar(200)
+  description   String?  @db.Text
+  quantity      Int      @default(0)                // Current on-hand stock count
+  reorderPoint  Int      @default(10)               // Trigger reorder alert below this qty
+  unitPrice     Decimal  @db.Decimal(12, 2)         // Per-unit cost
+  totalValue    Decimal  @db.Decimal(14, 2) @default(0) // quantity × unitPrice (denormalized)
+  warehouseZone String?  @db.VarChar(20)            // Physical location code (e.g. "A1")
+  barcodeUrl    String?                             // URL to generated barcode image
+  imageUrl      String?                             // Product photo
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  categoryId String?
+  category   InventoryCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  supplierId String?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  stockMovements     StockMovement[]
+  purchaseOrderItems PurchaseOrderItem[]
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([sku])
+  @@index([categoryId])
+  @@index([supplierId])
+  @@index([quantity])           // Fast low-stock queries: WHERE quantity <= reorderPoint
+  @@index([isActive])
+  @@index([name])               // Full-text search fallback
+  @@map("inventory_items")
+}
+
+// =============================================================================
+// MODEL: StockMovement
+// Immutable ledger of every stock change. Never update or delete rows here.
+// Quantity changes to InventoryItem.quantity are always backed by a movement.
+// =============================================================================
+model StockMovement {
+  id        String       @id @default(cuid())
+  type      MovementType                           // IN | OUT | ADJUSTMENT | TRANSFER | RESERVED
+  quantity  Int                                    // Positive for IN, negative for OUT
+  reference String?      @db.VarChar(100)         // PO number, issue ticket, etc.
+  notes     String?      @db.VarChar(500)
+  createdAt DateTime     @default(now())           // No updatedAt — immutable ledger
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  itemId String
+  item   InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([itemId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([reference])
+  @@map("stock_movements")
+}
+
+// =============================================================================
+// MODEL: PurchaseOrder
+// Represents a procurement request that flows through an approval pipeline.
+// Workflow: DRAFT → PENDING_APPROVAL → APPROVED → COMPLETED
+//                                    ↘ REJECTED
+// =============================================================================
+model PurchaseOrder {
+  id          String   @id @default(cuid())
+  poNumber    String   @unique @db.VarChar(30)    // Human-readable ID: "PO-2024-001"
+  status      POStatus @default(DRAFT)
+  totalAmount Decimal  @db.Decimal(14, 2) @default(0)
+  notes       String?  @db.Text
+  invoiceUrl  String?                             // Attached document URL
+  expectedAt  DateTime?                           // Expected delivery date
+  completedAt DateTime?                           // Date goods were received
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  creatorId String
+  creator   User    @relation("POCreator", fields: [creatorId], references: [id], onDelete: Restrict)
+
+  supplierId String?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  items     PurchaseOrderItem[]
+  approvals PurchaseOrderApproval[]
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([status])
+  @@index([creatorId])
+  @@index([supplierId])
+  @@index([createdAt])
+  @@index([poNumber])
+  @@map("purchase_orders")
+}
+
+// =============================================================================
+// MODEL: PurchaseOrderItem
+// Line items within a PO. Each line references an InventoryItem (or a free-
+// text name for items not yet in the system).
+// Deleted automatically when the parent PO is deleted (Cascade).
+// =============================================================================
+model PurchaseOrderItem {
+  id         String  @id @default(cuid())
+  quantity   Int
+  unitPrice  Decimal @db.Decimal(12, 2)
+  totalPrice Decimal @db.Decimal(14, 2)           // quantity × unitPrice (denormalized)
+  itemName   String? @db.VarChar(200)             // Free-text name if itemId is null
+  notes      String? @db.VarChar(500)
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  orderId String
+  order   PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  itemId String?
+  item   InventoryItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([orderId])
+  @@index([itemId])
+  @@map("purchase_order_items")
+}
+
+// =============================================================================
+// MODEL: PurchaseOrderApproval
+// Immutable history of every approval decision on a PO.
+// Multiple rows per PO are valid (escalation chains, re-submissions).
+// =============================================================================
+model PurchaseOrderApproval {
+  id        String         @id @default(cuid())
+  action    ApprovalAction                         // APPROVED | REJECTED | ESCALATED | RECALLED
+  comment   String?        @db.Text               // Approver's reasoning
+  createdAt DateTime       @default(now())         // No updatedAt — immutable record
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  orderId String
+  order   PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  approverId String
+  approver   User   @relation(fields: [approverId], references: [id], onDelete: Restrict)
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([orderId])
+  @@index([approverId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("purchase_order_approvals")
+}
+
+// =============================================================================
+// MODEL: Task
+// Work item tracked on the kanban board. Supports Jira-like workflows.
+// tags stored as a native PostgreSQL text array.
+// =============================================================================
+model Task {
+  id          String    @id @default(cuid())
+  title       String    @db.VarChar(300)
+  description String?   @db.Text
+  stage       TaskStage @default(TODO)
+  priority    Priority  @default(MEDIUM)
+  dueDate     DateTime?
+  completedAt DateTime?                           // Set when stage transitions to DONE
+  tags        String[]  @default([])              // PostgreSQL text array
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  creatorId String
+  creator   User   @relation("TaskCreator",  fields: [creatorId],  references: [id], onDelete: Restrict)
+
+  assigneeId String?
+  assignee   User?  @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  // ── Relations ──────────────────────────────────────────────────────────────
+  comments TaskComment[]
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([stage])
+  @@index([priority])
+  @@index([assigneeId])
+  @@index([creatorId])
+  @@index([dueDate])
+  @@index([createdAt])
+  @@map("tasks")
+}
+
+// =============================================================================
+// MODEL: TaskComment
+// Threaded discussion on a task. Deleted when the parent task is deleted.
+// =============================================================================
+model TaskComment {
+  id        String   @id @default(cuid())
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([taskId])
+  @@index([createdAt])
+  @@map("task_comments")
+}
+
+// =============================================================================
+// MODEL: AuditLog
+// Append-only compliance trail. Never update or delete rows.
+// userId is nullable to support system-generated events (cron jobs, AI alerts).
+// metadata holds arbitrary JSON for event-specific structured data.
+// =============================================================================
+model AuditLog {
+  id        String      @id @default(cuid())
+  action    AuditAction
+  entity    String      @db.VarChar(100)           // Table/module: "purchase_orders", "auth"
+  entityId  String?     @db.VarChar(100)           // PK of the affected record
+  detail    String?     @db.Text                   // Human-readable description
+  ipAddress String?     @db.VarChar(45)            // IPv4 or IPv6
+  userAgent String?     @db.VarChar(500)
+  metadata  Json?                                  // Structured diff or extra context
+  createdAt DateTime    @default(now())             // No updatedAt — immutable
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([userId])
+  @@index([action])
+  @@index([entity])
+  @@index([entityId])
+  @@index([createdAt])                             // Time-range compliance queries
+  @@index([entity, entityId])                      // "All events for PO X"
+  @@index([userId, createdAt])                     // "All actions by user Y"
+  @@map("audit_logs")
+}
+
+// =============================================================================
+// MODEL: AnalyticsSnapshot
+// Point-in-time metric captures for dashboards and trend charts.
+// Populated by scheduled jobs or the Finance team via the Analytics module.
+// dimension allows slicing: "monthly", "quarterly", "by_category", etc.
+// =============================================================================
+model AnalyticsSnapshot {
+  id           String   @id @default(cuid())
+  metric       String   @db.VarChar(100)           // "revenue", "expenses", "inventory_value"
+  value        Decimal  @db.Decimal(14, 2)
+  snapshotDate DateTime                            // The date this metric represents
+  dimension    String?  @db.VarChar(100)           // "monthly", "weekly", "by_department"
+  metadata     Json?                               // Extra breakdown data as JSON
+  createdAt    DateTime @default(now())
+
+  // ── Foreign keys ───────────────────────────────────────────────────────────
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  // ── Indexes ────────────────────────────────────────────────────────────────
+  @@index([metric])
+  @@index([snapshotDate])
+  @@index([dimension])
+  @@index([metric, snapshotDate])                  // Time-series chart queries
+  @@index([metric, dimension])                     // Filtered analytics views
+  @@map("analytics_snapshots")
+}
