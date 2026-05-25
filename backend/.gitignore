@@ -3,3 +3,9 @@ node_modules
 .env
 
 /generated/prisma
+backend/.env
+dist
+build
+coverage
+.DS_Store
+.vscode

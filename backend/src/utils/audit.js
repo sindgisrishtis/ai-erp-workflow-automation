@@ -21,14 +21,14 @@ const logger = require("../config/logger");
  * crash the main request flow.
  *
  * @param {object} params
- * @param {string}        params.action     - AuditAction enum value
- * @param {string}        params.entity     - Table/module name (e.g. "purchase_orders")
- * @param {string}        [params.entityId] - Primary key of the affected record
- * @param {string}        [params.detail]   - Human-readable description
- * @param {string}        [params.userId]   - Actor user ID (null for system actions)
+ * @param {string}        params.action
+ * @param {string}        params.entity
+ * @param {string}        [params.entityId]
+ * @param {string}        [params.detail]
+ * @param {string}        [params.userId]
  * @param {string}        [params.ipAddress]
  * @param {string}        [params.userAgent]
- * @param {object}        [params.metadata] - Any additional structured data
+ * @param {object}        [params.metadata]
  */
 async function writeAuditLog({
   action,
@@ -66,26 +66,29 @@ async function writeAuditLog({
 
 /**
  * Extract client IP from the request.
- * Handles proxies by checking x-forwarded-for.
  *
- * @param {import('express').Request} req
+ * @param {import("express").Request} req
  * @returns {string}
  */
 function getClientIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
+
   if (forwarded) {
-    // x-forwarded-for can be a comma-separated list; the first is the client
     return forwarded.split(",")[0].trim();
   }
+
   return req.ip || req.connection?.remoteAddress || "unknown";
 }
 
 /**
- * Build standard audit context from an Express request.
- * Call this in controllers/middleware to get { userId, ipAddress, userAgent }.
+ * Build standard audit context from Express request.
  *
- * @param {import('express').Request} req
- * @returns {{ userId: string|null, ipAddress: string, userAgent: string }}
+ * @param {import("express").Request} req
+ * @returns {{
+ *   userId: string|null,
+ *   ipAddress: string,
+ *   userAgent: string
+ * }}
  */
 function getAuditContext(req) {
   return {
@@ -95,4 +98,17 @@ function getAuditContext(req) {
   };
 }
 
-module.exports = { writeAuditLog, getClientIp, getAuditContext };
+/**
+ * Backward-compatible alias.
+ * Some modules import extractAuditContext().
+ */
+function extractAuditContext(req) {
+  return getAuditContext(req);
+}
+
+module.exports = {
+  writeAuditLog,
+  getClientIp,
+  getAuditContext,
+  extractAuditContext,
+};

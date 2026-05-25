@@ -84,6 +84,18 @@ function sendError(res, { message = "An error occurred", status = HTTP.SERVER_ER
 }
 
 /**
+ * Explicit paginated response helper.
+ * Backward-compatible wrapper used by some modules.
+ */
+function sendPaginated(res, data, pagination, message = "Success") {
+  return sendSuccess(res, {
+    data,
+    message,
+    meta: pagination,
+  });
+}
+
+/**
  * Shorthand error responses for common cases.
  */
 const send = {
@@ -118,4 +130,12 @@ function buildPaginationMeta(total, page, limit) {
   };
 }
 
-module.exports = { sendSuccess, sendCreated, sendError, send, buildPaginationMeta, HTTP };
+module.exports = {
+  sendSuccess,
+  sendCreated,
+  sendError,
+  sendPaginated,
+  send,
+  buildPaginationMeta,
+  HTTP,
+};

@@ -32,7 +32,10 @@ const prisma         = require("./config/prisma");
 const { send, HTTP } = require("./utils/response");
 
 // ── Route modules ─────────────────────────────────────────────────────────────
-const authRoutes     = require("./routes/auth.routes");
+const authRoutes      = require("./routes/auth.routes");
+const inventoryRoutes = require("./routes/inventory.routes");
+const purchaseOrderRoutes = require("./routes/purchaseOrder.routes");
+const taskRoutes = require("./routes/task.routes");
 
 // ── Error middleware (must be imported after routes) ──────────────────────────
 const {
@@ -240,15 +243,17 @@ function createApp() {
   // All routes are versioned under /api — add /api/v2/... for breaking changes.
   // =========================================================================
 
-  app.use("/api/auth", authRoutes);
-
-  // ── Future module routes (add as each module is built) ────────────────────
-  // app.use("/api/inventory",      require("./routes/inventory.routes"));
-  // app.use("/api/purchase-orders",require("./routes/purchaseOrder.routes"));
-  // app.use("/api/tasks",          require("./routes/task.routes"));
-  // app.use("/api/analytics",      require("./routes/analytics.routes"));
-  // app.use("/api/audit-logs",     require("./routes/auditLog.routes"));
-  // app.use("/api/ai",             require("./routes/ai.routes"));
+  app.use("/api/auth",      authRoutes);
+  app.use("/api/inventory", inventoryRoutes);
+  app.use("/api/purchase-orders", purchaseOrderRoutes);
+  app.use("/api/tasks", taskRoutes);
+  
+  // ── Future module routes (uncomment as each module is built) ─────────────
+  // app.use("/api/purchase-orders", require("./routes/purchaseOrder.routes"));
+  // app.use("/api/tasks",           require("./routes/task.routes"));
+  // app.use("/api/analytics",       require("./routes/analytics.routes"));
+  // app.use("/api/audit-logs",      require("./routes/auditLog.routes"));
+  // app.use("/api/ai",              require("./routes/ai.routes"));
 
   // =========================================================================
   // ROOT ROUTE (informational — useful for quick curl checks)
